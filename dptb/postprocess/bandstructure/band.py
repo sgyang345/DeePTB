@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from dptb.utils.tools import j_must_have
 from dptb.utils.make_kpoints  import ase_kpath, abacus_kpath, vasp_kpath
@@ -104,7 +105,6 @@ class Band(ElecStruCal):
 
         return EF
 
-
     def band_plot(
             self, 
             ref_band: Union[str, np.array, torch.Tensor, bool]=None,
@@ -113,7 +113,9 @@ class Band(ElecStruCal):
             emax: Optional[float]=None,
             ):
         
+        ref_band_path = None
         if isinstance(ref_band, str):
+            ref_band_path = ref_band
             ref_band = np.load(ref_band)
 
         ylabel = 'E - EF (eV)'
@@ -153,14 +155,84 @@ class Band(ElecStruCal):
                 log.error("Reference Eigenvalues' shape mismatch.")
                 raise ValueError
 
+            ref_xlist = self.eigenstatus["xlist"]
             if ref_band.shape[0] != self.eigenstatus["eigenvalues"].shape[0]:
-                log.info("kpoints in ref_band: ", ref_band.shape[0])
-                log.info("kpoints in model's prediction: ", self.eigenstatus["eigenvalues"].shape[0])
-                log.error("Reference Eigenvalues' should have sampled from the sample kpath as model's prediction.")
-                raise ValueError
+                log.info("kpoints in ref_band: %d", ref_band.shape[0])
+                log.info("kpoints in model's prediction: %d", self.eigenstatus["eigenvalues"].shape[0])
+
+                if ref_band_path is None:
+                    log.error("Reference Eigenvalues' should have sampled from the same kpath as model's prediction.")
+                    raise ValueError
+
+                ref_kpoints_path = os.path.join(os.path.dirname(ref_band_path), "kpoints.npy")
+                if not os.path.exists(ref_kpoints_path):
+                    log.error("Reference kpoints.npy is required when ref_band uses a different number of kpoints.")
+                    raise ValueError
+
+                ref_kpoints = np.load(ref_kpoints_path)
+                if len(ref_kpoints.shape) == 3:
+                    assert ref_kpoints.shape[0] == 1
+                    ref_kpoints = ref_kpoints.reshape(ref_kpoints.shape[1:])
+                if len(ref_kpoints.shape) != 2 or ref_kpoints.shape[1] != 3 or ref_kpoints.shape[0] != ref_band.shape[0]:
+                    log.error("Reference eigenvalues.npy and kpoints.npy should have the same number of kpoints.")
+                    raise ValueError
+
+                klist = np.asarray(self.eigenstatus["klist"])
+                xlist = np.asarray(self.eigenstatus["xlist"])
+                high_x = np.asarray(self.eigenstatus["high_sym_kpoints"])
+                tol = 1e-5
+                xtol = max(1e-10, float(np.ptp(xlist)) * 1e-8)
+                high_k, last = [], -1
+                for x in high_x:
+                    idx = np.where(np.isclose(xlist, x, rtol=0.0, atol=xtol))[0]
+                    idx = idx[idx > last]
+                    if idx.size == 0:
+                        log.error("Unable to locate high-symmetry kpoints on model kpath.")
+                        raise ValueError
+                    last = int(idx[0])
+                    high_k.append(klist[last])
+                high_k = np.asarray(high_k)
+
+                ref_idx, start = [], 0
+                for k in high_k:
+                    idx = np.where(np.linalg.norm(ref_kpoints[start:] - k, axis=1) <= tol)[0]
+                    if idx.size == 0:
+                        log.error("Reference kpoints.npy must have the same ordered high-symmetry kpoints.")
+                        raise ValueError
+                    ref_idx.append(start + int(idx[0]))
+                    start = ref_idx[-1] + 1
+                ref_idx = np.asarray(ref_idx)
+                if ref_idx[0] != 0 or ref_idx[-1] != ref_kpoints.shape[0] - 1:
+                    log.error("Reference kpoints.npy must start and end at the same high-symmetry kpoints.")
+                    raise ValueError
+
+                ref_xlist = np.empty(ref_kpoints.shape[0], dtype=float)
+                for i in range(len(high_k) - 1):
+                    ks, ke = high_k[i], high_k[i + 1]
+                    xs, xe = high_x[i], high_x[i + 1]
+                    start, end = ref_idx[i], ref_idx[i + 1]
+                    dk = ke - ks
+                    dk2 = float(np.dot(dk, dk))
+                    if end <= start or (abs(xe - xs) <= tol and end - start > 1):
+                        log.error("Reference kpoints.npy must keep the same kpath order and segment lengths.")
+                        raise ValueError
+                    prev_t = -tol
+                    for ik in range(start, end + 1):
+                        t = 0.0 if dk2 <= tol * tol else float(np.dot(ref_kpoints[ik] - ks, dk) / dk2)
+                        projected = ks + t * dk
+                        if t < -tol or t > 1.0 + tol or np.linalg.norm(ref_kpoints[ik] - projected) > tol or t + tol < prev_t:
+                            log.error("Reference kpoints.npy must sample the same ordered kpath; only different interpolation counts are allowed.")
+                            raise ValueError
+                        prev_t = max(prev_t, t)
+                        ref_xlist[ik] = xs + min(1.0, max(0.0, t)) * (xe - xs)
+
+                if not np.allclose(np.diff(high_x), ref_xlist[ref_idx[1:]] - ref_xlist[ref_idx[:-1]], rtol=1e-8, atol=tol):
+                    log.error("Reference kpoints.npy must have the same high-symmetry segment lengths.")
+                    raise ValueError
+                log.info("Reference kpoints.npy follows the same high-symmetry path with %d kpoints.", ref_kpoints.shape[0])
             ref_band = ref_band - (np.min(ref_band) - np.min(self.eigenstatus["eigenvalues"]))
-            nintp = max(1 , self.eigenstatus["xlist"].shape[0] // 25)
-            band_ref = ax.plot(self.eigenstatus["xlist"][::nintp], ref_band[::nintp] - E_fermi, 'o', ms=2, color=band_color, alpha=0.95, label="Ref")
+            nintp = max(1 , ref_xlist.shape[0] // 25)
+            band_ref = ax.plot(ref_xlist[::nintp], ref_band[::nintp] - E_fermi, 'o', ms=2, color=band_color, alpha=0.95, label="Ref")
             band_pre = ax.plot(self.eigenstatus["xlist"], self.eigenstatus["eigenvalues"] - E_fermi, color="tab:red", lw=0.5, alpha=0.95, label="DeePTB")
 
         else:
