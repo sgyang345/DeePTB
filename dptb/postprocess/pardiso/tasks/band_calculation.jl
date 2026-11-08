@@ -22,6 +22,49 @@ export run_band_calculation
 
 # Solver function is now passed as argument
 
+const EV_TO_RY = 0.07349864879716558
+
+function reciprocal_to_cartesian(lat, kpt)
+    ax, bx, cx = lat[1,1], lat[1,2], lat[1,3]
+    ay, by, cy = lat[2,1], lat[2,2], lat[2,3]
+    az, bz, cz = lat[3,1], lat[3,2], lat[3,3]
+    volume = ax*(by*cz - bz*cy) + ay*(bz*cx - bx*cz) + az*(bx*cy - by*cx)
+    scale = 2π / volume
+    a1 = scale*(by*cz - bz*cy); b1 = scale*(cy*az - cz*ay); c1 = scale*(ay*bz - az*by)
+    a2 = scale*(bz*cx - bx*cz); b2 = scale*(cz*ax - cx*az); c2 = scale*(az*bx - ax*bz)
+    a3 = scale*(bx*cy - by*cx); b3 = scale*(cx*ay - cy*ax); c3 = scale*(ax*by - ay*bx)
+    kx, ky, kz = kpt
+    return [kx*a1 + ky*b1 + kz*c1, kx*a2 + ky*b2 + kz*c2, kx*a3 + ky*b3 + kz*c3] ./ 2π
+end
+
+function save_lowf(ik, kpt, lat, eigenvalues, eigenvectors, output_dir)
+    num_band = length(eigenvalues)
+    norbits = size(eigenvectors, 1)
+    size(eigenvectors, 2) == num_band || error(
+        "Eigenvector count $(size(eigenvectors, 2)) does not match eigenvalue count $num_band at k-point $ik"
+    )
+
+    k_cart = reciprocal_to_cartesian(lat, kpt)
+    open(joinpath(output_dir, "LOWF_K_$ik.dat"), "w") do io
+        @printf(io, "%i (index of k points)\n", ik)
+        println(io, join([@sprintf("%.10f ", x) for x in k_cart]))
+        @printf(io, "%i (number of bands)\n", num_band)
+        @printf(io, "%i (number of orbitals)\n", norbits)
+        for ib in 1:num_band
+            @printf(io, "%i (band)\n", ib)
+            @printf(io, "%.23e (Ry)\n", eigenvalues[ib] * EV_TO_RY)
+            @printf(io, "%.23e (Occupations)\n", 0.0)
+            for iw in 1:norbits
+                @printf(io, "%.23e %.23e ", real(eigenvectors[iw,ib]), imag(eigenvectors[iw,ib]))
+                if iw % 5 == 0 && iw < norbits
+                    println(io)
+                end
+            end
+            println(io)
+        end
+    end
+end
+
 """
     save_bandstructure_h5(klist, xlist, eigenvalues, e_fermi, high_sym, labels, output_dir)
 
@@ -104,9 +147,13 @@ function run_band_calculation(config, H_R, S_R, structure, output_dir, solver_op
         H_k, S_k = HR2HK(kpt, H_R, S_R, norbits)
 
         # Solve eigenvalue problem using provided solver
-        egvals, _, _ = solver_func(H_k, S_k, fermi_level, num_band, max_iter,
-                                        false, solver_opts.ill_project, solver_opts.ill_threshold)
+        egvals, egvecs, _ = solver_func(H_k, S_k, fermi_level, num_band, max_iter,
+                                        out_wfc, solver_opts.ill_project, solver_opts.ill_threshold)
         push!(all_egvals, egvals)
+
+        if out_wfc
+            save_lowf(ik, kpt, lat, egvals, egvecs, output_dir)
+        end
 
         # Append to text file incrementally
         open(txt_path, "a") do f
