@@ -147,15 +147,7 @@ function std_out_array(a::AbstractArray)
 end
 
 function reciprocal_2_cartessian(lat, kx, ky, kz)
-    ax, bx, cx = lat[1,1], lat[1,2], lat[1,3]
-    ay, by, cy = lat[2,1], lat[2,2], lat[2,3]
-    az, bz, cz = lat[3,1], lat[3,2], lat[3,3]
-    v1 = ax*(by*cz - bz*cy) + ay*(bz*cx - bx*cz) + az*(bx*cy - by*cx)
-    v2 = 2π / v1
-    a1 = v2*(by*cz - bz*cy); b1 = v2*(cy*az - cz*ay); c1 = v2*(ay*bz - az*by)
-    a2 = v2*(bz*cx - bx*cz); b2 = v2*(cz*ax - cx*az); c2 = v2*(az*bx - ax*bz)
-    a3 = v2*(bx*cy - by*cx); b3 = v2*(cx*ay - cy*ax); c3 = v2*(ax*by - ay*bx)
-    return [kx*a1 + ky*b1 + kz*c1, kx*a2 + ky*b2 + kz*c2, kx*a3 + ky*b3 + kz*c3] ./ 2π
+    return lat \ Float64[kx, ky, kz]
 end
 
 # ==================== K-Path Parsing ====================
@@ -171,15 +163,13 @@ function parse_kpath_abacus(kpath_config, lat, labels=String[])
     
     total_dist = 0.0
     kpoints = [Float64.(row[1:3]) for row in kpath_config]
-    recip_metric_inv = 2π * inv(lat) 
-    
     for i in 1:(length(kpath_config)-1)
         k_start = kpoints[i]
         k_end = kpoints[i+1]
         n_segment = Int(kpath_config[i][4])
         
         dk = k_end .- k_start
-        dk_cart = dk' * recip_metric_inv
+        dk_cart = 2π .* reciprocal_2_cartessian(lat, dk...)
         dist_segment = norm(dk_cart)
         
         if n_segment > 0

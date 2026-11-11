@@ -16,26 +16,13 @@ using Dates
 
 # Import shared modules from parent scope (main.jl)
 using ..Hamiltonian: HR2HK
-using ..KPoints: parse_kpath
+using ..KPoints: fractional_to_cartesian, parse_kpath
 
 export run_band_calculation
 
 # Solver function is now passed as argument
 
 const EV_TO_RY = 0.07349864879716558
-
-function reciprocal_to_cartesian(lat, kpt)
-    ax, bx, cx = lat[1,1], lat[1,2], lat[1,3]
-    ay, by, cy = lat[2,1], lat[2,2], lat[2,3]
-    az, bz, cz = lat[3,1], lat[3,2], lat[3,3]
-    volume = ax*(by*cz - bz*cy) + ay*(bz*cx - bx*cz) + az*(bx*cy - by*cx)
-    scale = 2π / volume
-    a1 = scale*(by*cz - bz*cy); b1 = scale*(cy*az - cz*ay); c1 = scale*(ay*bz - az*by)
-    a2 = scale*(bz*cx - bx*cz); b2 = scale*(cz*ax - cx*az); c2 = scale*(az*bx - ax*bz)
-    a3 = scale*(bx*cy - by*cx); b3 = scale*(cx*ay - cy*ax); c3 = scale*(ax*by - ay*bx)
-    kx, ky, kz = kpt
-    return [kx*a1 + ky*b1 + kz*c1, kx*a2 + ky*b2 + kz*c2, kx*a3 + ky*b3 + kz*c3] ./ 2π
-end
 
 function save_lowf(ik, kpt, lat, eigenvalues, eigenvectors, output_dir)
     num_band = length(eigenvalues)
@@ -44,7 +31,7 @@ function save_lowf(ik, kpt, lat, eigenvalues, eigenvectors, output_dir)
         "Eigenvector count $(size(eigenvectors, 2)) does not match eigenvalue count $num_band at k-point $ik"
     )
 
-    k_cart = reciprocal_to_cartesian(lat, kpt)
+    k_cart = fractional_to_cartesian(lat, kpt)
     open(joinpath(output_dir, "LOWF_K_$ik.dat"), "w") do io
         @printf(io, "%i (index of k points)\n", ik)
         println(io, join([@sprintf("%.10f ", x) for x in k_cart]))

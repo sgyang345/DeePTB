@@ -5,7 +5,16 @@ module KPoints
 
 using LinearAlgebra
 
-export parse_kpath, gen_kmesh
+export fractional_to_cartesian, parse_kpath, gen_kmesh
+
+"""
+    fractional_to_cartesian(lat, kpt)
+
+Convert a fractional reciprocal-space coordinate to a Cartesian coordinate
+without the conventional `2π` factor. The lattice vectors in `lat` are stored
+as rows, matching `structure.json` and ASE's cell convention.
+"""
+fractional_to_cartesian(lat, kpt) = lat \ Float64.(kpt)
 
 """
     parse_kpath(kpath_config, lat, labels)
@@ -26,15 +35,13 @@ function parse_kpath(kpath_config, lat, labels=String[])
 
     total_dist = 0.0
     kpoints = [Float64.(row[1:3]) for row in kpath_config]
-    recip_metric_inv = 2π * inv(lat)
-
     for i in 1:(length(kpath_config)-1)
         k_start = kpoints[i]
         k_end = kpoints[i+1]
         n_segment = Int(kpath_config[i][4])
 
         dk = k_end .- k_start
-        dk_cart = dk' * recip_metric_inv
+        dk_cart = 2π .* fractional_to_cartesian(lat, dk)
         dist_segment = norm(dk_cart)
 
         if n_segment > 0
