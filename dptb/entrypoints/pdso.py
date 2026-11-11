@@ -1,5 +1,6 @@
 import subprocess
 import logging
+import json
 import os
 import sys
 from pathlib import Path
@@ -8,6 +9,26 @@ from dptb.postprocess.unified.system import TBSystem
 from dptb.utils.loggers import set_log_handles
 
 log = logging.getLogger(__name__)
+
+
+def _get_override_overlap(config_path: str) -> Optional[str]:
+    """Return the configured overlap path, resolved relative to the config."""
+    with open(config_path, "r") as f:
+        config = json.load(f)
+
+    task_options = config.get("task_options", {})
+    overlap_path = task_options.get("override_overlap") if isinstance(task_options, dict) else None
+    if overlap_path is None:
+        overlap_path = config.get("override_overlap")
+    if overlap_path is None:
+        return None
+    if not isinstance(overlap_path, str) or not overlap_path.strip():
+        raise ValueError("override_overlap must be a non-empty file path")
+
+    path = Path(overlap_path).expanduser()
+    if not path.is_absolute():
+        path = Path(config_path).parent / path
+    return str(path.resolve())
 
 def pdso(
         INPUT: str,
@@ -60,6 +81,12 @@ def pdso(
     if not os.path.isfile(config_path):
         log.error(f"Configuration file not found: {config_path}")
         sys.exit(1)
+
+    try:
+        override_overlap = _get_override_overlap(config_path)
+    except (OSError, json.JSONDecodeError, ValueError) as e:
+        log.error(f"Failed to read override_overlap from configuration: {e}")
+        sys.exit(1)
     
     # Ensure output directories exist
     os.makedirs(output_path, exist_ok=True)
@@ -70,12 +97,22 @@ def pdso(
         if not structure:
             log.error("Structure file (-stu) is required when using model checkpoint (-i).")
             sys.exit(1)
+        if override_overlap and not os.path.isfile(override_overlap):
+            log.error(f"Overlap file not found: {override_overlap}")
+            sys.exit(1)
+
+        if override_overlap:
+            log.info(f"Using external overlap: {override_overlap}")
             
         log.info(f"Initializing TBSystem from {init_model} and {structure}...")
         
         try:
             # Initialize System
-            tbsys = TBSystem(data=structure, calculator=init_model)
+            tbsys = TBSystem(
+                data=structure,
+                calculator=init_model,
+                override_overlap=override_overlap,
+            )
             
             # Export Data
             log.info(f"Exporting data to {output_path}...")
@@ -94,6 +131,11 @@ def pdso(
         if not os.path.exists(input_data_dir):
             log.error(f"Data directory not found: {input_data_dir}")
             sys.exit(1)
+        if override_overlap:
+            log.warning(
+                "override_overlap is only applied during export mode (-i); "
+                "run-only mode (-d) uses predicted_overlaps.h5 from data_dir."
+            )
     else:
         log.error("Either model checkpoint (-i) or data directory (-d) must be provided.")
         sys.exit(1)
